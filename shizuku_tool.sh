@@ -253,7 +253,7 @@ fn_settings_menu() {
 #  包名 → 应用名 翻译
 # ═══════════════════════════════════════════════════════════
 label_of_pkg() {
-  # 参数 $1 = 包名，输出格式 "包名:应用名"
+  # 参数 $1 = 包名，输出应用名（无包名）
   local p="$1" name=""
   case "$p" in
     com.vivo.deformer)                         name="vivo系统应用(Deformer)" ;;
