@@ -740,7 +740,7 @@ label_of_pkg() {
     *) name="" ;;
   esac
   if [ -n "$name" ]; then
-    printf '%s:%s\n' "$p" "$name"
+    printf '%s\n' "$name"
   else
     printf '%s\n' "$p"
   fi
