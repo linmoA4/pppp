@@ -762,6 +762,265 @@ translate_pkg_lines() {
   done
 }
 
+# 关键词 → 包名 映射表（用户输入关键词用）
+# 支持常用应用 + 别名
+keyword_to_pkg() {
+  local kw="$1" result=""
+  case "$kw" in
+    # 短视频 / 社交
+    快手|ks|kuaishou) result="com.smile.gifmaker" ;;
+    抖音|douyin|dy) result="com.ss.android.ugc.aweme" ;;
+    抖音极速|抖音极速版) result="com.ss.android.ugc.aweme.lite" ;;
+    微信|wechat|wx) result="com.tencent.mm" ;;
+    QQ|qq) result="com.tencent.mobileqq" ;;
+    微博|weibo) result="com.sina.weibo" ;;
+    小红书|xhs) result="com.xingin.xhs" ;;
+    钉钉|dingtalk) result="com.alibaba.android.rimet" ;;
+    淘宝|taobao|tb) result="com.taobao.taobao" ;;
+    支付宝|alipay) result="com.eg.android.AlipayGphone" ;;
+    咸鱼|闲鱼|xianyu|yuer) result="com.taobao.idlefish" ;;
+    京东|jd|jingdong) result="com.jingdong.app.mall" ;;
+    美团|meituan) result="com.sankuai.meituan" ;;
+    外卖|美团外卖) result="com.sankuai.meituan.takeoutnew" ;;
+    饿了么|ele) result="me.ele" ;;
+    拼多多|pdd) result="com.xunmeng.pinduoduo" ;;
+
+    # 视频 / 音乐
+    哔哩|b站|bilibili|bl) result="tv.danmaku.bili" ;;
+    腾讯视频) result="com.tencent.qqlive" ;;
+    爱奇艺|iqiyi) result="com.qiyi.video" ;;
+    优酷|youku) result="com.youku.phone" ;;
+    网易云音乐|网抑云|netease|cloudmusic) result="com.netease.cloudmusic" ;;
+    QQ音乐|qqmusic) result="com.tencent.qqmusic" ;;
+    酷狗音乐|kugou) result="com.kugou.android" ;;
+    汽水音乐|qishui) result="com.luna.music" ;;
+    波点音乐|bodian) result="cn.wenyu.bodian" ;;
+
+    # 工具 / 浏览器
+    chrome|浏览器|chrome浏览器) result="com.android.chrome" ;;
+    Edge|edge) result="com.microsoft.emmx" ;;
+    UC浏览器|uc) result="com.UCMobile" ;;
+    夸克|quark) result="com.quark.browser" ;;
+    Via|via) result="mark.via" ;;
+    百度网盘|baidunetdisk|pan) result="com.baidu.netdisk" ;;
+
+    # 地图 / 导航
+    高德地图|高德|amap) result="com.autonavi.minimap" ;;
+    百度地图|baidumap) result="com.baidu.BaiduMap" ;;
+
+    # 游戏
+    和平精英|hpjy|pubgm) result="com.tencent.tmgp.pubgmhd" ;;
+    使命召唤|codm) result="com.tencent.tmgp.cod" ;;
+    原神|genshin|yuanshen) result="com.miHoYo.Yuanshen" ;;
+    4399游戏盒|4399|gamebox) result="com.m4399.gamecenter" ;;
+
+    # vivo 系统
+    vivo相册|相册) result="com.vivo.gallery" ;;
+    vivo音乐|音乐) result="com.android.bbkmusic" ;;
+    vivo相机|相机) result="com.android.camera" ;;
+    设置) result="com.android.settings" ;;
+
+    *) result="" ;;
+  esac
+  printf '%s' "$result"
+}
+
+# 根据关键词解析包名：先查关键词表，再查已安装列表
+resolve_pkg_by_keyword() {
+  local kw="$1" pkg=""
+  # 1) 关键词表精确/模糊匹配
+  pkg=$(keyword_to_pkg "$kw")
+  if [ -n "$pkg" ]; then
+    # 检查是否已安装
+    if pm list packages 2>/dev/null | grep -q "^package:${pkg}$"; then
+      printf '%s' "$pkg"
+      return 0
+    fi
+  fi
+  # 2) 在已安装包名中模糊匹配
+  pkg=$(pm list packages 2>/dev/null | grep -i "$kw" | head -1 | sed 's/^package://' | tr -d ' ')
+  if [ -n "$pkg" ]; then
+    printf '%s' "$pkg"
+    return 0
+  fi
+  # 3) 在应用标签中模糊匹配（反向遍历 label_of_pkg）
+  pkg=$(pm list packages 2>/dev/null | while read -r line; do
+    local p=$(printf '%s' "$line" | sed 's/^package://' | tr -d ' ')
+    [ -z "$p" ] && continue
+    local label
+    label=$(label_of_pkg "$p")
+    case "$label" in
+      *"$kw"*) printf '%s' "$p"; break ;;
+    esac
+  done)
+  if [ -n "$pkg" ]; then
+    printf '%s' "$pkg"
+    return 0
+  fi
+  return 1
+}
+
+# 获取应用的启动 Activity（优先用，失败再用 monkey
+get_launch_activity() {
+  local pkg="$1" act=""
+  act=$(dumpsys package "$pkg" 2>/dev/null | grep -A 1 "android.intent.action.MAIN" | head -2 | grep -oE "[a-zA-Z0-9_.]+/[a-zA-Z0-9_.\+A-Za-z]*" | head -1)
+  if [ -z "$act" ]; then
+    # 另一种方式：解析 package dump 直接从 package manager 中提取
+    act=$(dumpsys package "$pkg" 2>/dev/null | sed -n '/MAIN/,/cat=/p' | grep -oE "${pkg}/[a-zA-Z0-9_.]+" | head -1)
+  fi
+  printf '%s' "$act"
+}
+
+# 多窗口启动（Android 14-16 多方案适配，vivo/小米/OPPO/华为全覆盖）
+# 参数: $1 = 包名, $2 = 模式 (normal/freeform/split)
+start_app_windowed() {
+  local pkg="$1" mode="$2"
+  [ -z "$pkg" ] && return 1
+
+  # 获取启动 Activity
+  local act=""
+  act=$(cmd package resolve-activity --brief "$pkg" 2>/dev/null | grep -v "^No activity found" | tail -1 | tr -d ' ')
+  if [ -z "$act" ] || echo "$act" | grep -q "package"; then
+    act=$(dumpsys package "$pkg" 2>/dev/null | grep -oE "${pkg}/[a-zA-Z0-9_.]+" | head -1)
+  fi
+
+  local label
+  label=$(label_of_pkg "$pkg")
+
+  case "$mode" in
+    freeform)
+      info "小窗启动: $label"
+      # 方案 1: Android 14+ 推荐 --windowing-mode 5 (freeform)
+      if [ -n "$act" ]; then
+        am start-activity --windowing-mode 5 -n "$act" >/dev/null 2>&1 && ok "小窗启动成功" && return 0
+        am start --display 0 --stack 3 -n "$act" >/dev/null 2>&1 && ok "小窗启动成功" && return 0
+        am start --windowing-mode 5 -n "$act" >/dev/null 2>&1 && ok "小窗启动成功" && return 0
+      fi
+      # 方案 2: 直接通过包名
+      am start --windowing-mode 5 "$pkg" >/dev/null 2>&1 && ok "小窗启动成功" && return 0
+      # 方案 3: vivo/小米/OPPO/华为 通用 -n 组件
+      am start -n "${pkg}/.MainActivity" >/dev/null 2>&1 && ok "小窗启动成功" && return 0
+      # 方案 4: 降级为普通启动
+      monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && warn "窗口模式不支持，已普通启动" && return 0
+      err "启动失败: $pkg"
+      ;;
+    split)
+      info "分屏启动: $label"
+      if [ -n "$act" ]; then
+        am start-activity --windowing-mode 6 -n "$act" >/dev/null 2>&1 && ok "分屏启动成功" && return 0
+        am start-activity --stack 2 -n "$act" >/dev/null 2>&1 && ok "分屏启动成功" && return 0
+        am start --windowing-mode 6 -n "$act" >/dev/null 2>&1 && ok "分屏启动成功" && return 0
+      fi
+      am start --windowing-mode 6 "$pkg" >/dev/null 2>&1 && ok "分屏启动成功" && return 0
+      monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && warn "窗口模式不支持，已普通启动" && return 0
+      err "启动失败: $pkg"
+      ;;
+    *)
+      info "普通启动: $label"
+      if [ -n "$act" ]; then
+        am start -n "$act" >/dev/null 2>&1 && ok "已启动" && return 0
+      fi
+      monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && ok "已启动" || err "启动失败"
+      ;;
+  esac
+}
+
+# 分屏双应用启动
+start_split_two() {
+  local pkg1="$1" pkg2="$2"
+  local label1 label2
+  label1=$(label_of_pkg "$pkg1")
+  label2=$(label_of_pkg "$pkg2")
+
+  info "启动 1: $label1"
+  info "启动 2: $label2"
+
+  local act1 act2
+  act1=$(cmd package resolve-activity --brief "$pkg1" 2>/dev/null | grep -v "^No activity" | tail -1 | tr -d ' ')
+  act2=$(cmd package resolve-activity --brief "$pkg2" 2>/dev/null | grep -v "^No activity" | tail -1 | tr -d ' ')
+
+  # 方案 A: 官方 windowing-mode 6 (split-screen primary + secondary)
+  if [ -n "$act1" ] && [ -n "$act2" ]; then
+    am start-activity --windowing-mode 6 -n "$act1" >/dev/null 2>&1
+    sleep 1
+    am start-activity --windowing-mode 6 -n "$act2" >/dev/null 2>&1
+    ok "分屏启动完成"
+    return 0
+  fi
+
+  # 方案 B: stack 模式 (兼容旧系统)
+  am start-activity --stack 2 "$pkg1" >/dev/null 2>&1
+  sleep 1
+  am start-activity --stack 3 "$pkg2" >/dev/null 2>&1
+  ok "分屏启动完成 (stack 模式)"
+  return 0
+
+  # 方案 C: 普通启动，提示用户手动分屏
+  monkey -p "$pkg1" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+  sleep 1
+  monkey -p "$pkg2" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+  warn "系统不支持自动分屏，两个应用已分别启动，请手动拖入分屏"
+}
+
+# 关键词启动子菜单
+fn_keyword_start() {
+  while true; do
+    printf '\n'
+    printf '  %s── 关键词启动菜单 ──%s\n' "$M" "$D"
+    printf '  %s[A]%s 普通启动（一个应用）\n' "$C" "$D"
+    printf '  %s[B]%s 小窗启动（一个应用）\n' "$C" "$D"
+    printf '  %s[C]%s 分屏启动（两个应用）\n' "$C" "$D"
+    printf '  %s[0]%s 返回\n' "$R" "$D"
+    sep
+    printf '  %s➜%s 选择: ' "$C" "$D"; read -r sub
+    case "$sub" in
+      A|a)
+        ask_str KW "输入关键词（如: 微信、抖音、快手）"
+        if [ -n "$KW" ]; then
+          local pkg
+          pkg=$(resolve_pkg_by_keyword "$KW")
+          if [ -n "$pkg" ]; then
+            start_app_windowed "$pkg" "normal"
+          else
+            err "未找到匹配的应用: $KW"
+          fi
+        fi
+        pause
+        ;;
+      B|b)
+        ask_str KW "输入关键词（如: 微信、抖音、快手）"
+        if [ -n "$KW" ]; then
+          local pkg
+          pkg=$(resolve_pkg_by_keyword "$KW")
+          if [ -n "$pkg" ]; then
+            start_app_windowed "$pkg" "freeform"
+          else
+            err "未找到匹配的应用: $KW"
+          fi
+        fi
+        pause
+        ;;
+      C|c)
+        ask_str KW1 "第一个应用关键词"
+        ask_str KW2 "第二个应用关键词"
+        if [ -n "$KW1" ] && [ -n "$KW2" ]; then
+          local pkg1 pkg2
+          pkg1=$(resolve_pkg_by_keyword "$KW1")
+          pkg2=$(resolve_pkg_by_keyword "$KW2")
+          if [ -n "$pkg1" ] && [ -n "$pkg2" ]; then
+            start_split_two "$pkg1" "$pkg2"
+          else
+            err "未找到匹配应用（可能未安装）"
+          fi
+        fi
+        pause
+        ;;
+      0) return ;;
+      *) warn "无效选项" ;;
+    esac
+  done
+}
+
 fn_app_menu() {
   while true; do
     box "应用管理"
@@ -773,14 +1032,18 @@ fn_app_menu() {
     printf '  %s[5]%s 启用应用\n' "$C" "$D"
     printf '  %s[6]%s 强制停止\n' "$C" "$D"
     printf '  %s[7]%s 清除应用数据\n' "$C" "$D"
-    printf '  %s── 权限 / 启动 ──%s\n' "$M" "$D"
-    printf '  %s[8]%s 授予所有运行时权限\n' "$C" "$D"
-    printf '  %s[9]%s 启动应用 (输入包名)\n' "$C" "$D"
-    printf '  %s[10]%s 卸载应用\n' "$C" "$D"
-    printf '  %s── 信息 ──%s\n' "$M" "$D"
-    printf '  %s[11]%s 查看应用详细信息 (dumpsys)\n' "$C" "$D"
-    printf '  %s[12]%s 查看应用 UID / 路径\n' "$C" "$D"
-    printf '  %s[13]%s 搜索包名 (含名称)\n' "$C" "$D"
+    printf '  %s── 关键词启动 (Android 14-16) ──%s\n' "$M" "$D"
+    printf '  %s[8]%s 关键词启动菜单（推荐）\n' "$C" "$D"
+    printf '  %s[9]%s 关键词 · 普通启动\n' "$C" "$D"
+    printf '  %s[10]%s 关键词 · 小窗启动（单应用）\n' "$C" "$D"
+    printf '  %s[11]%s 关键词 · 分屏启动（两个应用）\n' "$C" "$D"
+    printf '  %s── 权限 / 启动 / 信息 ──%s\n' "$M" "$D"
+    printf '  %s[12]%s 授予所有运行时权限\n' "$C" "$D"
+    printf '  %s[13]%s 启动应用 (输入包名)\n' "$C" "$D"
+    printf '  %s[14]%s 卸载应用\n' "$C" "$D"
+    printf '  %s[15]%s 查看应用详细信息 (dumpsys)\n' "$C" "$D"
+    printf '  %s[16]%s 查看应用 UID / 路径\n' "$C" "$D"
+    printf '  %s[17]%s 搜索包名 (含名称)\n' "$C" "$D"
     printf '  %s[0]%s 返回\n' "$R" "$D"
 
     sep
@@ -793,7 +1056,52 @@ fn_app_menu() {
       5) ask_str P "输入包名"; [ -n "$P" ] && { local L; L=$(label_of_pkg "$P"); info "目标: $L"; run_show pm enable "$P"; }; pause ;;
       6) ask_str P "输入包名"; [ -n "$P" ] && { local L; L=$(label_of_pkg "$P"); info "目标: $L"; run_show am force-stop "$P"; }; pause ;;
       7) ask_str P "输入包名"; [ -n "$P" ] && { local L; L=$(label_of_pkg "$P"); info "目标: $L"; ask_yes "确认清除 ${P} 的数据?" && run_show pm clear "$P"; }; pause ;;
-      8) ask_str P "输入包名"; [ -n "$P" ] && { local L; L=$(label_of_pkg "$P"); info "目标: $L"; run_show pm grant-all-runtime-permissions "$P" 2>/dev/null; }
+
+      # 关键词启动
+      8) fn_keyword_start ;;
+      9)
+        ask_str KW "输入关键词（如: 微信、抖音、快手、b 站、chrome）"
+        if [ -n "$KW" ]; then
+          local pkg
+          pkg=$(resolve_pkg_by_keyword "$KW")
+          if [ -n "$pkg" ]; then
+            start_app_windowed "$pkg" "normal"
+          else
+            err "未找到匹配的应用: $KW"
+          fi
+        fi
+        pause
+        ;;
+      10)
+        ask_str KW "输入关键词（如: 微信、抖音、快手）"
+        if [ -n "$KW" ]; then
+          local pkg
+          pkg=$(resolve_pkg_by_keyword "$KW")
+          if [ -n "$pkg" ]; then
+            start_app_windowed "$pkg" "freeform"
+          else
+            err "未找到匹配的应用: $KW"
+          fi
+        fi
+        pause
+        ;;
+      11)
+        ask_str KW1 "第一个应用关键词"
+        ask_str KW2 "第二个应用关键词"
+        if [ -n "$KW1" ] && [ -n "$KW2" ]; then
+          local pkg1 pkg2
+          pkg1=$(resolve_pkg_by_keyword "$KW1")
+          pkg2=$(resolve_pkg_by_keyword "$KW2")
+          if [ -n "$pkg1" ] && [ -n "$pkg2" ]; then
+            start_split_two "$pkg1" "$pkg2"
+          else
+            err "未找到匹配应用（可能未安装）"
+          fi
+        fi
+        pause
+        ;;
+
+      12) ask_str P "输入包名"; [ -n "$P" ] && { local L; L=$(label_of_pkg "$P"); info "目标: $L"; run_show pm grant-all-runtime-permissions "$P" 2>/dev/null; }
          if [ $? -ne 0 ]; then
            info "grant-all 不可用，尝试逐项授予..."
            for perm in $(pm list permissions -g -f 2>/dev/null | grep -E '^    permission:' | awk '{print $2}'); do
@@ -802,11 +1110,11 @@ fn_app_menu() {
            ok "已尝试授予权限"
          fi
          pause ;;
-      9) ask_str P "输入包名"; [ -n "$P" ] && { local L; L=$(label_of_pkg "$P"); info "启动: $L"; monkey -p "$P" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && ok "已启动" || err "启动失败"; }; pause ;;
-      10) ask_str P "输入包名"; [ -n "$P" ] && { local L; L=$(label_of_pkg "$P"); info "目标: $L"; ask_yes "确认卸载 ${P}?" && run_show pm uninstall --user 0 "$P"; }; pause ;;
-      11) ask_str P "输入包名"; [ -n "$P" ] && { local L; L=$(label_of_pkg "$P"); info "详情: $L"; dumpsys package "$P" 2>/dev/null | sed 's/^/    /' | head -80; }; pause ;;
-      12) ask_str P "输入包名"; [ -n "$P" ] && { pm list packages -f -U 2>/dev/null | grep "$P" | sed 's/^/    /'; }; pause ;;
-      13)
+      13) ask_str P "输入包名"; [ -n "$P" ] && { local L; L=$(label_of_pkg "$P"); info "启动: $L"; monkey -p "$P" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && ok "已启动" || err "启动失败"; }; pause ;;
+      14) ask_str P "输入包名"; [ -n "$P" ] && { local L; L=$(label_of_pkg "$P"); info "目标: $L"; ask_yes "确认卸载 ${P}?" && run_show pm uninstall --user 0 "$P"; }; pause ;;
+      15) ask_str P "输入包名"; [ -n "$P" ] && { local L; L=$(label_of_pkg "$P"); info "详情: $L"; dumpsys package "$P" 2>/dev/null | sed 's/^/    /' | head -80; }; pause ;;
+      16) ask_str P "输入包名"; [ -n "$P" ] && { pm list packages -f -U 2>/dev/null | grep "$P" | sed 's/^/    /'; }; pause ;;
+      17)
         ask_str KW "关键字(包名或名称)"; [ -n "$KW" ] && {
           info "匹配 \"$KW\" 的应用:";
           pm list packages 2>/dev/null | translate_pkg_lines | grep -i "$KW"
