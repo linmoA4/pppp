@@ -1164,44 +1164,82 @@ fn_input_menu() {
 }
 
 # ═══════════════════════════════════════════════════════════
-#  6. 网络 / Wi-Fi / APN
+#  6. 网络 / Wi-Fi / IP
 # ═══════════════════════════════════════════════════════════
 fn_network_menu() {
   while true; do
     box "网络 / Wi-Fi"
     printf '  %s── 状态 ──%s\n' "$M" "$D"
-    printf '  %s[1]%s 查看网络信息 (ifconfig)\n' "$C" "$D"
-    printf '  %s[2]%s 查看连接表 (netstat)\n' "$C" "$D"
-    printf '  %s[3]%s 查看 Wi-Fi 连接信息\n' "$C" "$D"
-    printf '  %s[4]%s Ping 测试\n' "$C" "$D"
-    printf '  %s── DNS / 开关 ──%s\n' "$M" "$D"
-    printf '  %s[5]%s 开关 Wi-Fi (尝试)\n' "$C" "$D"
-    printf '  %s[6]%s 开关飞行模式\n' "$C" "$D"
-    printf '  %s── 高级 ──%s\n' "$M" "$D"
-    printf '  %s[7]%s 查看当前 APN\n' "$C" "$D"
-    printf '  %s[8]%s 查看代理设置\n' "$C" "$D"
-    printf '  %s[9]%s 关闭 / 开启移动网络\n' "$C" "$D"
-    printf '  %s── 查看当前 IP ──%s\n' "$M" "$D"
-    printf '  %s[10]%s 查看本机 IP (wlan0)\n' "$C" "$D"
-    printf '  %s[11]%s 查看所有网络接口\n' "$C" "$D"
-    printf '  %s── IP / DNS 自定义 ──%s\n' "$M" "$D"
-    printf '  %s[12]%s 指定接口 ifconfig (up/down)\n' "$C" "$D"
+    printf '  %s[1]%s 本机 IP 地址\n' "$C" "$D"
+    printf '  %s[2]%s Wi-Fi 状态\n' "$C" "$D"
+    printf '  %s[3]%s 移动网络状态\n' "$C" "$D"
+    printf '  %s[4]%s Wi-Fi 信息（已连接热点）\n' "$C" "$D"
+    printf '  %s[5]%s Ping 测试\n' "$C" "$D"
+    printf '  %s── DNS ──%s\n' "$M" "$D"
+    printf '  %s[6]%s 查看当前 DNS\n' "$C" "$D"
+    printf '  %s[7]%s 查看代理设置\n' "$C" "$D"
+    printf '  %s── 开关 ──%s\n' "$M" "$D"
+    printf '  %s[8]%s 开关 Wi-Fi\n' "$C" "$D"
+    printf '  %s[9]%s 开关飞行模式\n' "$C" "$D"
+    printf '  %s[10]%s 开关移动网络\n' "$C" "$D"
     printf '  %s[0]%s 返回\n' "$R" "$D"
     sep
     printf '  %s➜%s 选择: ' "$C" "$D"; read -r c
     case "$c" in
-      1) (ifconfig 2>/dev/null || ip addr) | sed 's/^/    /'; pause ;;
-      2) (netstat -an 2>/dev/null || ss -tuln 2>/dev/null) | sed 's/^/    /' | head -40; pause ;;
-      3) dumpsys connectivity 2>/dev/null | grep -A 30 "NetworkInfo" | head -30 | sed 's/^/    /'; pause ;;
-      4) ask_str HOST "ping 目标 (例 8.8.8.8)"; [ -n "$HOST" ] && (ping -c 3 -W 2 "$HOST" 2>&1 | sed 's/^/    /'); pause ;;
-      5) ask_int S "Wi-Fi 1=开 0=关" 0 1; [ "$S" = "1" ] && svc wifi enable && ok "Wi-Fi 已开启" || svc wifi disable && ok "Wi-Fi 已关闭" ;;
-      6) ask_int S "飞行模式 1=开 0=关" 0 1; settings put global airplane_mode_on "$S"; am broadcast -a android.intent.action.AIRPLANE_MODE; ok "已设置飞行模式=$S" ;;
-      7) content query --uri content://telephony/carriers/preferapn 2>/dev/null | sed 's/^/    /' | head -20; pause ;;
-      8) settings get global http_proxy 2>/dev/null | sed 's/^/    /'; pause ;;
-      9) ask_int S "移动网络 1=开 0=关" 0 1; [ "$S" = "1" ] && svc data enable && ok "已开启" || svc data disable && ok "已关闭" ;;
-      10) ifconfig wlan0 2>/dev/null | sed 's/^/    /'; pause ;;
-      11) (ip link 2>/dev/null || cat /proc/net/dev 2>/dev/null) | sed 's/^/    /' | head -40; pause ;;
-      12) ask_str IF "接口名 (例 wlan0 / eth0)"; [ -n "$IF" ] && ask_int S "1=up 0=down" 0 1; [ "$S" = "1" ] && ifconfig "$IF" up && ok "${IF} up" || ifconfig "$IF" down && ok "${IF} down" ;;
+      1)
+        # 简化：只显示 IPv4 / IPv6
+        info "IPv4:"
+        ifconfig wlan0 2>/dev/null | grep "inet " | awk '{print "    "$4"  "$2}'
+        ifconfig wlan0 2>/dev/null | grep "inet6" | grep -v "fe80" | awk '{print "    "$4}'
+        info "IPv6 (链路本地):"
+        ifconfig wlan0 2>/dev/null | grep "inet6" | grep "fe80" | awk '{print "    "$4}'
+        pause
+        ;;
+      2)
+        local wstate
+        wstate=$(settings get global wifi_on 2>/dev/null)
+        case "$wstate" in 1) wstate="已开启" ;; 0) wstate="已关闭" ;; *) wstate="未知" ;; esac
+        kv "Wi-Fi" "$wstate"
+        kv "Wi-Fi 状态" "$(dumpsys wifi 2>/dev/null | grep -E "current network state|Supplicant state" | head -2 | sed 's/^[[:space:]]*//' | tr -s ' ')"
+        pause
+        ;;
+      3)
+        local dstate dnet
+        dstate=$(settings get global mobile_data 2>/dev/null)
+        dnet=$(settings get global mobile_data_on 2>/dev/null)
+        case "$dstate" in 1) dstate="已开启" ;; 0) dstate="已关闭" ;; *) dstate="未知" ;; esac
+        case "$dnet" in 1) dnet="已开启" ;; 0) dnet="已关闭" ;; *) dnet="未知" ;; esac
+        kv "移动数据" "$dstate"
+        kv "数据网络" "$dnet"
+        kv "SIM 卡" "$(dumpsys telephony.registry 2>/dev/null | grep "mServiceState" | grep -oE "HOME|ROAMING|SEARCHING|NO_SERVICE|UNKNOWN" | head -1)"
+        pause
+        ;;
+      4)
+        dumpsys wifi 2>/dev/null | grep -E "SSID|BSSID|signalLevel|frequency|Link negotiation" | sed 's/^[[:space:]]*/    /' | grep -v "^$"
+        pause
+        ;;
+      5)
+        ask_str HOST "ping 目标 (留空=8.8.8.8)"
+        [ -z "$HOST" ] && HOST="8.8.8.8"
+        info "正在 ping $HOST ..."
+        ping -c 3 -W 2 "$HOST" 2>&1 | grep -E "bytes from|time=|rtt|round-trip" | sed 's/^/    /'
+        pause
+        ;;
+      6)
+        info "当前 DNS:"
+        getprop net.dns1 2>/dev/null | sed 's/^/    DNS1: /'
+        getprop net.dns2 2>/dev/null | sed 's/^/    DNS2: /'
+        getprop net.dns 2>/dev/null | tr ' ' '\n' | grep -v "^$" | sed 's/^/    DNS: /'
+        pause
+        ;;
+      7)
+        kv "HTTP 代理" "$(settings get global http_proxy 2>/dev/null)"
+        kv "代理端口" "$(settings get global http_proxy_port 2>/dev/null)"
+        pause
+        ;;
+      8) ask_int S "Wi-Fi 1=开 0=关" 0 1; [ "$S" = "1" ] && svc wifi enable && ok "Wi-Fi 已开启" || svc wifi disable && ok "Wi-Fi 已关闭" ;;
+      9) ask_int S "飞行模式 1=开 0=关" 0 1; settings put global airplane_mode_on "$S"; am broadcast -a android.intent.action.AIRPLANE_MODE --ez state "$S" >/dev/null 2>&1; ok "飞行模式=$S" ;;
+      10) ask_int S "移动网络 1=开 0=关" 0 1; [ "$S" = "1" ] && svc data enable && ok "已开启" || svc data disable && ok "已关闭" ;;
       0)  return ;;
       *) warn "无效选项" ;;
     esac
