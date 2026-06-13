@@ -856,7 +856,7 @@ get_launch_activity() {
   printf '%s' "$act"
 }
 
-# 多窗口启动（先启动 → 再 move-task 到对应 stack）
+# 多窗口启动（OriginOS 5 / Android 14+ 多层 fallback）
 # 参数: $1 = 包名, $2 = 模式 (normal/freeform/split)
 start_app_windowed() {
   local pkg="$1" mode="$2"
@@ -868,37 +868,51 @@ start_app_windowed() {
   case "$mode" in
     freeform)
       info "小窗启动: $label"
-      # 方式 1: 直接 stack 3 (freeform) 启动
-      am start --stack 3 "$pkg" >/dev/null 2>&1 && ok "小窗启动成功 (stack)" && return 0
-      # 方式 2: --windowing-mode 5 (AOSP freeform)
-      am start-activity --windowing-mode 5 "$pkg" >/dev/null 2>&1 && ok "小窗启动成功 (w5)" && return 0
-      # 方式 3: 先启动再 move-task (最兼容)
+      # --- OriginOS 5 专用 ---
+      # 方式 1: --stack 3 (freeform stack)
+      am start --stack 3 "$pkg" >/dev/null 2>&1 && ok "✓ 小窗启动 (stack)" && return 0
+      # 方式 2: --windowing-mode 5
+      am start-activity --windowing-mode 5 "$pkg" >/dev/null 2>&1 && ok "✓ 小窗启动 (w5)" && return 0
+      # 方式 3: OriginOS vivo_freeform / window_mode extra (直接 am start 不带 -n)
+      am start "$pkg" --es "vivo_freeform" "true" >/dev/null 2>&1 && ok "✓ 小窗启动 (vivo)" && return 0
+      am start "$pkg" --es "window_mode" "small" >/dev/null 2>&1 && ok "✓ 小窗启动 (mode)" && return 0
+      # 方式 4: 带 FLAG_ACTIVITY_LAUNCH_ADJACENT 启动
+      am start "$pkg" --flags 0x00002000 >/dev/null 2>&1 && ok "✓ 小窗启动 (flag)" && return 0
+      # 方式 5: 先普通启动，再 move-task 到 freeform (最兼容 vivo)
       monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
       sleep 1
       local task
-      task=$(dumpsys activity top 2>/dev/null | grep -E "^  TaskRecord|^    Task" | grep -oE "id=[0-9]+" | head -1 | cut -d= -f2)
-      [ -n "$task" ] && am move-task "$task" 3 >/dev/null 2>&1 && ok "小窗启动成功 (move)" && return 0
-      # 方式 4: 失败降级
-      warn "当前系统不支持强制小窗，已普通启动"
+      task=$(dumpsys activity top 2>/dev/null | grep -oE "id=[0-9]+" | head -1 | cut -d= -f2)
+      if [ -n "$task" ]; then
+        am move-task "$task" 3 >/dev/null 2>&1 && ok "✓ 小窗启动 (move-task)" && return 0
+        am move-task-to-stack "$task" 3 >/dev/null 2>&1 && ok "✓ 小窗启动 (move-stack)" && return 0
+      fi
+      # 方式 6: 用 settings 开启 force_freeform 再试
+      settings put global force_freeform 1 >/dev/null 2>&1
+      sleep 0.3
+      am start --stack 3 "$pkg" >/dev/null 2>&1 && ok "✓ 小窗启动 (force)" && return 0
+      # 失败降级
+      warn "当前 OriginOS 不支持强制小窗，已普通启动"
       return 0
       ;;
     split)
       info "分屏启动: $label"
-      am start --stack 2 "$pkg" >/dev/null 2>&1 && ok "分屏启动成功 (stack)" && return 0
-      am start-activity --windowing-mode 6 "$pkg" >/dev/null 2>&1 && ok "分屏启动成功 (w6)" && return 0
+      am start --stack 2 "$pkg" >/dev/null 2>&1 && ok "✓ 分屏启动 (stack)" && return 0
+      am start-activity --windowing-mode 6 "$pkg" >/dev/null 2>&1 && ok "✓ 分屏启动 (w6)" && return 0
+      am start "$pkg" --es "vivo_split" "true" >/dev/null 2>&1 && ok "✓ 分屏启动 (vivo)" && return 0
       monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
       warn "系统不支持强制分屏，已普通启动"
       return 0
       ;;
     *)
       info "普通启动: $label"
-      am start "$pkg" >/dev/null 2>&1 && ok "已启动" && return 0
-      monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && ok "已启动" || err "启动失败"
+      am start "$pkg" >/dev/null 2>&1 && ok "✓ 已启动" && return 0
+      monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && ok "✓ 已启动" || err "启动失败"
       ;;
   esac
 }
 
-# 分屏双应用启动（先启动 A 到 stack2，再启动 B 到 stack3）
+# 分屏双应用启动（OriginOS 5 专用）
 start_split_two() {
   local pkg1="$1" pkg2="$2"
   local label1 label2
@@ -908,17 +922,22 @@ start_split_two() {
   info "启动 1: $label1"
   info "启动 2: $label2"
 
-  # 方案 A: 直接 stack 模式 (2=primary split, 3=secondary split/freeform)
+  # 方案 A: stack 2 + stack 3
   am start --stack 2 "$pkg1" >/dev/null 2>&1
   sleep 1
-  am start --stack 3 "$pkg2" >/dev/null 2>&1 && ok "分屏启动完成" && return 0
+  am start --stack 3 "$pkg2" >/dev/null 2>&1 && ok "✓ 分屏启动完成" && return 0
 
   # 方案 B: windowing-mode
   am start-activity --windowing-mode 6 "$pkg1" >/dev/null 2>&1
   sleep 1
-  am start-activity --windowing-mode 5 "$pkg2" >/dev/null 2>&1 && ok "分屏+小窗启动完成" && return 0
+  am start-activity --windowing-mode 5 "$pkg2" >/dev/null 2>&1 && ok "✓ 分屏+小窗启动完成" && return 0
 
-  # 方案 C: 普通启动，提示用户手动分屏
+  # 方案 C: OriginOS vivo 参数
+  am start "$pkg1" --es "vivo_split" "true" >/dev/null 2>&1
+  sleep 1
+  am start "$pkg2" --es "vivo_freeform" "true" >/dev/null 2>&1 && ok "✓ 分屏完成 (vivo)" && return 0
+
+  # 方案 D: 普通启动，提示手动分屏
   monkey -p "$pkg1" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
   sleep 1
   monkey -p "$pkg2" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
