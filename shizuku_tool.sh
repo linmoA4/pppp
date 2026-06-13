@@ -825,34 +825,19 @@ keyword_to_pkg() {
   printf '%s' "$result"
 }
 
-# 根据关键词解析包名：先查关键词表，再查已安装列表
+# 根据关键词解析包名：关键词表 → 包名 grep（删最慢的 label 遍历）
 resolve_pkg_by_keyword() {
   local kw="$1" pkg=""
-  # 1) 关键词表精确/模糊匹配
+  # 1) 关键词表（最快，O(1)）
   pkg=$(keyword_to_pkg "$kw")
   if [ -n "$pkg" ]; then
-    # 检查是否已安装
     if pm list packages 2>/dev/null | grep -q "^package:${pkg}$"; then
       printf '%s' "$pkg"
       return 0
     fi
   fi
-  # 2) 在已安装包名中模糊匹配
+  # 2) 在包名字符串里 grep（较快，一次 grep 就出结果）
   pkg=$(pm list packages 2>/dev/null | grep -i "$kw" | head -1 | sed 's/^package://' | tr -d ' ')
-  if [ -n "$pkg" ]; then
-    printf '%s' "$pkg"
-    return 0
-  fi
-  # 3) 在应用标签中模糊匹配（反向遍历 label_of_pkg）
-  pkg=$(pm list packages 2>/dev/null | while read -r line; do
-    local p=$(printf '%s' "$line" | sed 's/^package://' | tr -d ' ')
-    [ -z "$p" ] && continue
-    local label
-    label=$(label_of_pkg "$p")
-    case "$label" in
-      *"$kw"*) printf '%s' "$p"; break ;;
-    esac
-  done)
   if [ -n "$pkg" ]; then
     printf '%s' "$pkg"
     return 0
@@ -871,18 +856,11 @@ get_launch_activity() {
   printf '%s' "$act"
 }
 
-# 多窗口启动（Android 14-16 多方案适配，vivo/小米/OPPO/华为全覆盖）
+# 多窗口启动（先启动 → 再 move-task 到对应 stack）
 # 参数: $1 = 包名, $2 = 模式 (normal/freeform/split)
 start_app_windowed() {
   local pkg="$1" mode="$2"
   [ -z "$pkg" ] && return 1
-
-  # 获取启动 Activity
-  local act=""
-  act=$(cmd package resolve-activity --brief "$pkg" 2>/dev/null | grep -v "^No activity found" | tail -1 | tr -d ' ')
-  if [ -z "$act" ] || echo "$act" | grep -q "package"; then
-    act=$(dumpsys package "$pkg" 2>/dev/null | grep -oE "${pkg}/[a-zA-Z0-9_.]+" | head -1)
-  fi
 
   local label
   label=$(label_of_pkg "$pkg")
@@ -890,42 +868,37 @@ start_app_windowed() {
   case "$mode" in
     freeform)
       info "小窗启动: $label"
-      # 方案 1: Android 14+ 推荐 --windowing-mode 5 (freeform)
-      if [ -n "$act" ]; then
-        am start-activity --windowing-mode 5 -n "$act" >/dev/null 2>&1 && ok "小窗启动成功" && return 0
-        am start --display 0 --stack 3 -n "$act" >/dev/null 2>&1 && ok "小窗启动成功" && return 0
-        am start --windowing-mode 5 -n "$act" >/dev/null 2>&1 && ok "小窗启动成功" && return 0
-      fi
-      # 方案 2: 直接通过包名
-      am start --windowing-mode 5 "$pkg" >/dev/null 2>&1 && ok "小窗启动成功" && return 0
-      # 方案 3: vivo/小米/OPPO/华为 通用 -n 组件
-      am start -n "${pkg}/.MainActivity" >/dev/null 2>&1 && ok "小窗启动成功" && return 0
-      # 方案 4: 降级为普通启动
-      monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && warn "窗口模式不支持，已普通启动" && return 0
-      err "启动失败: $pkg"
+      # 方式 1: 直接 stack 3 (freeform) 启动
+      am start --stack 3 "$pkg" >/dev/null 2>&1 && ok "小窗启动成功 (stack)" && return 0
+      # 方式 2: --windowing-mode 5 (AOSP freeform)
+      am start-activity --windowing-mode 5 "$pkg" >/dev/null 2>&1 && ok "小窗启动成功 (w5)" && return 0
+      # 方式 3: 先启动再 move-task (最兼容)
+      monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+      sleep 1
+      local task
+      task=$(dumpsys activity top 2>/dev/null | grep -E "^  TaskRecord|^    Task" | grep -oE "id=[0-9]+" | head -1 | cut -d= -f2)
+      [ -n "$task" ] && am move-task "$task" 3 >/dev/null 2>&1 && ok "小窗启动成功 (move)" && return 0
+      # 方式 4: 失败降级
+      warn "当前系统不支持强制小窗，已普通启动"
+      return 0
       ;;
     split)
       info "分屏启动: $label"
-      if [ -n "$act" ]; then
-        am start-activity --windowing-mode 6 -n "$act" >/dev/null 2>&1 && ok "分屏启动成功" && return 0
-        am start-activity --stack 2 -n "$act" >/dev/null 2>&1 && ok "分屏启动成功" && return 0
-        am start --windowing-mode 6 -n "$act" >/dev/null 2>&1 && ok "分屏启动成功" && return 0
-      fi
-      am start --windowing-mode 6 "$pkg" >/dev/null 2>&1 && ok "分屏启动成功" && return 0
-      monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && warn "窗口模式不支持，已普通启动" && return 0
-      err "启动失败: $pkg"
+      am start --stack 2 "$pkg" >/dev/null 2>&1 && ok "分屏启动成功 (stack)" && return 0
+      am start-activity --windowing-mode 6 "$pkg" >/dev/null 2>&1 && ok "分屏启动成功 (w6)" && return 0
+      monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+      warn "系统不支持强制分屏，已普通启动"
+      return 0
       ;;
     *)
       info "普通启动: $label"
-      if [ -n "$act" ]; then
-        am start -n "$act" >/dev/null 2>&1 && ok "已启动" && return 0
-      fi
+      am start "$pkg" >/dev/null 2>&1 && ok "已启动" && return 0
       monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && ok "已启动" || err "启动失败"
       ;;
   esac
 }
 
-# 分屏双应用启动
+# 分屏双应用启动（先启动 A 到 stack2，再启动 B 到 stack3）
 start_split_two() {
   local pkg1="$1" pkg2="$2"
   local label1 label2
@@ -935,31 +908,21 @@ start_split_two() {
   info "启动 1: $label1"
   info "启动 2: $label2"
 
-  local act1 act2
-  act1=$(cmd package resolve-activity --brief "$pkg1" 2>/dev/null | grep -v "^No activity" | tail -1 | tr -d ' ')
-  act2=$(cmd package resolve-activity --brief "$pkg2" 2>/dev/null | grep -v "^No activity" | tail -1 | tr -d ' ')
-
-  # 方案 A: 官方 windowing-mode 6 (split-screen primary + secondary)
-  if [ -n "$act1" ] && [ -n "$act2" ]; then
-    am start-activity --windowing-mode 6 -n "$act1" >/dev/null 2>&1
-    sleep 1
-    am start-activity --windowing-mode 6 -n "$act2" >/dev/null 2>&1
-    ok "分屏启动完成"
-    return 0
-  fi
-
-  # 方案 B: stack 模式 (兼容旧系统)
-  am start-activity --stack 2 "$pkg1" >/dev/null 2>&1
+  # 方案 A: 直接 stack 模式 (2=primary split, 3=secondary split/freeform)
+  am start --stack 2 "$pkg1" >/dev/null 2>&1
   sleep 1
-  am start-activity --stack 3 "$pkg2" >/dev/null 2>&1
-  ok "分屏启动完成 (stack 模式)"
-  return 0
+  am start --stack 3 "$pkg2" >/dev/null 2>&1 && ok "分屏启动完成" && return 0
+
+  # 方案 B: windowing-mode
+  am start-activity --windowing-mode 6 "$pkg1" >/dev/null 2>&1
+  sleep 1
+  am start-activity --windowing-mode 5 "$pkg2" >/dev/null 2>&1 && ok "分屏+小窗启动完成" && return 0
 
   # 方案 C: 普通启动，提示用户手动分屏
   monkey -p "$pkg1" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
   sleep 1
   monkey -p "$pkg2" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
-  warn "系统不支持自动分屏，两个应用已分别启动，请手动拖入分屏"
+  warn "系统不支持自动分屏，两个应用已分别启动，可手动拖入分屏"
 }
 
 # 关键词启动子菜单
