@@ -2,9 +2,10 @@
 
 # Shizuku 权限
 RISH="/data/data/bin.mt.plus/rish"
-# 只在非 Shizuku 环境下才切换
-if [ -f "$RISH" ] && [ "$(id -u 2>/dev/null)" != "2000" ]; then
-  exec "$RISH" "$0" "$@"
+# 如果 rish 存在，尝试用 rish 执行本脚本
+# （直接 exec 切换，不经过 sh 解释器）
+if [ -f "$RISH" ]; then
+  "$RISH" sh "$0" "$@"
 fi
 
 ESC=$(printf '\033')
