@@ -1,18 +1,13 @@
 #!/system/bin/sh
 
-# Shizuku 权限（检查是否存在 + 是否有执行权限）
+# Shizuku 权限
 RISH="/data/data/bin.mt.plus/rish"
+# 如果 rish 可执行且当前不在 Shizuku shell，则切换
 if [ -f "$RISH" ] && [ -x "$RISH" ]; then
-  if [ "$(id -u 2>/dev/null)" != "2000" ]; then
+  # 用 pm list packages 测试是否有 shell 权限（比 id -u 更可靠）
+  if ! pm list packages >/dev/null 2>&1; then
     exec "$RISH" "$0" "$@"
   fi
-fi
-
-# 检查 Shizuku 权限
-if [ "$(id -u 2>/dev/null)" != "2000" ]; then
-  HAS_SHIZUKU=0
-else
-  HAS_SHIZUKU=1
 fi
 
 ESC=$(printf '\033')
@@ -52,12 +47,6 @@ box() {
   printf "  ${C}╭────────────────────────────╮${D}\n"
   printf "  ${C}│${D}            %s            ${C}│${D}\n" "$1"
   printf "  ${C}╰────────────────────────────╯${D}\n"
-}
-
-warn_shizuku() {
-  if [ "$HAS_SHIZUKU" = "0" ]; then
-    printf "  ${Y}!${D} 无 Shizuku 权限，部分操作可能失败\n"
-  fi
 }
 
 hr() { printf "  ${C}──────────────────────────────${D}\n"; }
@@ -171,7 +160,6 @@ while true; do
   printf "\n"
   info "设备: $(getprop ro.product.model)"
   info "系统: Android $(getprop ro.build.version.release)"
-  warn_shizuku
   hr
 
   printf "\n"
