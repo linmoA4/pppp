@@ -6,9 +6,14 @@
 # ═══════════════════════════════════════════════════════════
 
 RISH="/data/data/bin.mt.plus/rish"
-if [ -f "$RISH" ]; then
-  if [ "$(id -u 2>/dev/null)" != "2000" ]; then
-    exec "$RISH" "$0"
+MY_UID=$(id -u 2>/dev/null)
+if [ "$MY_UID" != "0" ] && [ "$MY_UID" != "2000" ]; then
+  if [ "$1" = "--in-rish" ]; then
+    echo "  ! Shizuku 未授权，请在 MT 管理器中开启"
+    exit 1
+  fi
+  if [ -f "$RISH" ]; then
+    exec sh "$RISH" "$0" "--in-rish"
   fi
 fi
 

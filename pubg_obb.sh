@@ -4,10 +4,23 @@
 #  PUBG OBB 导入工具
 #  自动检测 Shizuku 权限
 # ═══════════════════════════════════════════════════════════
-# 自动检测 Shizuku 权限
+# ─── 自动检测 Shizuku 权限 ───
 RISH="/data/data/bin.mt.plus/rish"
-if [ -f "$RISH" ]; then
-  exec /system/bin/sh "$RISH" "$0" "$@"
+MY_UID=$(id -u 2>/dev/null)
+
+if [ "$MY_UID" != "0" ] && [ "$MY_UID" != "2000" ]; then
+  if [ "$1" = "--in-rish" ]; then
+    echo "  ! 已经在 rish 里但 UID 仍是 $MY_UID，Shizuku 可能未授权"
+    echo "    请先在 MT 管理器 → 设置 → 开启 Shizuku 权限"
+    exit 1
+  fi
+  if [ -f "$RISH" ]; then
+    exec sh "$RISH" "$0" "--in-rish"
+  else
+    echo "  ! 找不到 $RISH"
+    echo "    请手动执行:  sh /data/data/bin.mt.plus/rish"
+    exit 1
+  fi
 fi
 
 ESC=$(printf '\033')
