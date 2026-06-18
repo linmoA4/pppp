@@ -2,12 +2,9 @@
 
 # Shizuku 权限
 RISH="/data/data/bin.mt.plus/rish"
-# 如果 rish 可执行且当前不在 Shizuku shell，则切换
-if [ -f "$RISH" ] && [ -x "$RISH" ]; then
-  # 用 pm list packages 测试是否有 shell 权限（比 id -u 更可靠）
-  if ! pm list packages >/dev/null 2>&1; then
-    exec "$RISH" "$0" "$@"
-  fi
+# 只在非 Shizuku 环境下才切换
+if [ -f "$RISH" ] && [ "$(id -u 2>/dev/null)" != "2000" ]; then
+  exec "$RISH" "$0" "$@"
 fi
 
 ESC=$(printf '\033')
