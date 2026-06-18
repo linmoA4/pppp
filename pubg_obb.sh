@@ -2,9 +2,12 @@
 
 # ═══════════════════════════════════════════════════════════
 #  PUBG OBB 导入工具
-#  使用方法: 先 sh /data/data/bin.mt.plus/rish 进入 Shizuku
-#            再 sh /storage/emulated/0/pubg_obb.sh
+#  自动检测 Shizuku 权限
 # ═══════════════════════════════════════════════════════════
+RISH="/data/data/bin.mt.plus/rish"
+if [ -f "$RISH" ]; then
+  exec /system/bin/sh "$RISH" sh "$0" "$@"
+fi
 
 ESC=$(printf '\033')
 D="${ESC}[0m"
