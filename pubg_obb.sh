@@ -4,9 +4,10 @@
 #  PUBG OBB 导入工具
 #  自动检测 Shizuku 权限
 # ═══════════════════════════════════════════════════════════
+# 自动检测 Shizuku 权限
 RISH="/data/data/bin.mt.plus/rish"
 if [ -f "$RISH" ]; then
-  exec /system/bin/sh "$RISH" sh "$0" "$@"
+  exec /system/bin/sh "$RISH" "$0" "$@"
 fi
 
 ESC=$(printf '\033')
