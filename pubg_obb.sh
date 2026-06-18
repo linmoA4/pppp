@@ -1,35 +1,22 @@
 #!/system/bin/sh
 
-# Shizuku 权限
-RISH="/data/data/bin.mt.plus/rish"
-# 如果 rish 存在，尝试用 rish 执行本脚本
-# （直接 exec 切换，不经过 sh 解释器）
-if [ -f "$RISH" ]; then
-  "$RISH" sh "$0" "$@"
-fi
+# ═══════════════════════════════════════════════════════════
+#  PUBG OBB 导入工具
+#  使用方法: 先 sh /data/data/bin.mt.plus/rish 进入 Shizuku
+#            再 sh /storage/emulated/0/pubg_obb.sh
+# ═══════════════════════════════════════════════════════════
 
 ESC=$(printf '\033')
 D="${ESC}[0m"
-C="${ESC}[1;36m"    # cyan
-G="${ESC}[1;32m"    # green
-Y="${ESC}[1;33m"    # yellow
-R="${ESC}[1;31m"    # red
-M="${ESC}[1;35m"    # magenta
-B="${ESC}[1;34m"    # blue (台湾服)
-W="${ESC}[1;37m"    # white (全球服)
-O="${ESC}[1;33m"    # orange (日韩服, 用 yellow 模拟, 安卓无橙色)
-RD="${ESC}[1;31m"   # red (越南服)
+C="${ESC}[1;36m"
+G="${ESC}[1;32m"
+Y="${ESC}[1;33m"
+R="${ESC}[1;31m"
+B="${ESC}[1;34m"
+W="${ESC}[1;37m"
 
 NATIVE="/storage/emulated/0/Android/obb"
 CONTAINER="/storage/emulated/0/Android/data/com.tencent.igce/Android/obb"
-
-# 服务器配置
-SERVICES="
-global com.tencent.ig 全球服
-krjp com.pubg.krmobile 日韩服
-tw com.rekoo.pubgm 台服
-vn com.vng.pubgmobile 越南服
-"
 
 server_label() {
   case "$1" in
@@ -62,10 +49,10 @@ find_obb() {
     -type f -name "$obb_name" -print 2>/dev/null | head -n1
 }
 
-# 安装 OBB
+# 安装 OBB（全自动，不询问）
 install_obb() {
   local key="$1" root="$2"
-  local pkg label label_raw
+  local pkg label_raw
 
   case "$key" in
     global) pkg="com.tencent.ig"; label_raw="全球服" ;;
@@ -74,7 +61,6 @@ install_obb() {
     vn)     pkg="com.vng.pubgmobile"; label_raw="越南服" ;;
   esac
 
-  label=$(server_label "$key")
   box "$label_raw"
 
   local obb_name="main.21125.${pkg}.obb"
@@ -83,11 +69,10 @@ install_obb() {
   info "目标: $dest"
   hr
 
-  # 已存在?
+  # 已存在? 直接覆盖
   if [ -f "$dest" ]; then
-    ok "已存在 ($(du -h "$dest" 2>/dev/null | awk '{print $1}'))"
-    printf "  强制重写? [y/N] "; read -r a
-    case "$a" in y|Y) rm -f "$dest";; *) return;; esac
+    info "已存在，直接覆盖"
+    rm -f "$dest"
   fi
 
   info "扫描 OBB 文件 ..."
@@ -95,37 +80,35 @@ install_obb() {
   src=$(find_obb "$pkg")
 
   if [ -z "$src" ]; then
-    err "未找到 $obb_name，请先把文件放到内部存储"
+    err "未找到 $obb_name"
+    err "请先把 OBB 文件放到 /sdcard/Download/"
     return 1
   fi
   ok "找到: $src ($(du -h "$src" 2>/dev/null | awk '{print $1}'))"
 
-  printf "  开始复制? [y/N] "; read -r a
-  case "$a" in y|Y) :;; *) info "已取消"; return;; esac
-
+  # 直接复制，不询问
+  info "正在复制 ..."
   mkdir -p "${root}/${pkg}"
   cp -f "$src" "$dest"
   sync
 
   if [ -f "$dest" ]; then
-    ok "完成 ($(du -h "$dest" 2>/dev/null | awk '{print $1}'))"
+    ok "复制完成 ($(du -h "$dest" 2>/dev/null | awk '{print $1}'))"
   else
-    err "复制失败"
+    err "复制失败 (权限不足?)"
+    err "请确保已通过 Shizuku 获取权限"
     return 1
   fi
 
-  printf "  删除源文件? [y/N] "; read -r a
-  case "$a" in y|Y) rm -f "$src"; ok "已删除源";; *) info "已保留源文件";; esac
+  # 删除源文件
+  rm -f "$src"
+  ok "已删除源文件"
 
-  printf "  启动游戏? [y/N] "; read -r a
-  case "$a" in
-    y|Y)
-      local start
-      [ "$root" = "$CONTAINER" ] && start="com.tencent.igce" || start="$pkg"
-      monkey -p "$start" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
-      ok "已启动"
-      ;;
-  esac
+  # 启动游戏
+  local start
+  [ "$root" = "$CONTAINER" ] && start="com.tencent.igce" || start="$pkg"
+  monkey -p "$start" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+  ok "已启动游戏"
 }
 
 # 服务器选择菜单
